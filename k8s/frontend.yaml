@@ -1,4 +1,4 @@
-# week10/k8s/frontend.yaml
+# week10/k8s/frontend.yaml 
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,47 +8,15 @@ spec:
   replicas: 1
   selector:
     matchLabels: { app: frontend }
-
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
-  progressDeadlineSeconds: 180
   template:
     metadata:
       labels: { app: frontend }
     spec:
-      terminationGracePeriodSeconds: 10
       containers:
         - name: frontend
           image: ${ACR_LOGIN_SERVER}/frontend:${IMAGE_TAG}
           ports:
             - containerPort: 80
-
-          lifecycle:
-            preStop:
-              exec:
-                command: ["sh", "-c", "nginx -s quit || true; sleep 1"]
-
-          readinessProbe:
-            httpGet:
-              path: /
-              port: 80
-            initialDelaySeconds: 2
-            periodSeconds: 3
-            timeoutSeconds: 1
-            failureThreshold: 3
-
-          livenessProbe:
-            httpGet:
-              path: /
-              port: 80
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 2
-            failureThreshold: 3
-
           volumeMounts:
             - name: frontend-config
               mountPath: /usr/share/nginx/html/config.js
