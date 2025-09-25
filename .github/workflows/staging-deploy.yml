@@ -173,20 +173,32 @@ jobs:
           sleep 30
 
           # Test Product Service
-          echo "→ Testing Product Service"
-          curl -f --max-time 30 "http://$PRODUCT_IP:8000/" || curl -f --max-time 30 "http://$PRODUCT_IP:8000/products" || echo "⚠️ Product service test failed"
+          if curl -sf --max-time 30 "http://$PRODUCT_IP:8000/" >/dev/null 2>&1 || curl -sf --max-time 30 "http://$PRODUCT_IP:8000/products" >/dev/null 2>&1; then
+            echo "✅ Product Service: PASS"
+          else
+            echo "❌ Product Service: FAIL"
+          fi
 
           # Test Order Service
-          echo "→ Testing Order Service"
-          curl -f --max-time 30 "http://$ORDER_IP:8001/" || curl -f --max-time 30 "http://$ORDER_IP:8001/orders" || echo "⚠️ Order service test failed"
+          if curl -sf --max-time 30 "http://$ORDER_IP:8001/" >/dev/null 2>&1 || curl -sf --max-time 30 "http://$ORDER_IP:8001/orders" >/dev/null 2>&1; then
+            echo "✅ Order Service: PASS"
+          else
+            echo "❌ Order Service: FAIL"
+          fi
 
           # Test Customer Service
-          echo "→ Testing Customer Service"
-          curl -f --max-time 30 "http://$CUSTOMER_IP:8002/" || curl -f --max-time 30 "http://$CUSTOMER_IP:8002/customers" || echo "⚠️ Customer service test failed"
+          if curl -sf --max-time 30 "http://$CUSTOMER_IP:8002/" >/dev/null 2>&1 || curl -sf --max-time 30 "http://$CUSTOMER_IP:8002/customers" >/dev/null 2>&1; then
+            echo "✅ Customer Service: PASS"
+          else
+            echo "❌ Customer Service: FAIL"
+          fi
 
           # Test Frontend
-          echo "→ Testing Frontend"
-          curl -f --max-time 30 "http://$FRONTEND_IP:80/" || echo "⚠️ Frontend test failed"
+          if curl -sf --max-time 30 "http://$FRONTEND_IP:80/" >/dev/null 2>&1; then
+            echo "✅ Frontend: PASS"
+          else
+            echo "❌ Frontend: FAIL"
+          fi
 
           echo "✅ API tests completed"
 
