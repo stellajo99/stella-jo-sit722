@@ -4,105 +4,108 @@ name: CD - Staging (Create → Deploy → Test → Destroy)
 on:
   pull_request:
     branches: [ "main" ]
+    types: [opened, reopened, synchronize, ready_for_review]
 
 env:
-  # ACR login server. You can hardcode it too, but keeping it in a secret is cleaner.
   REGISTRY: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
-
-  # Hard-coded AKS resource group and cluster name (these are *not* secrets)
   AKS_RG: deakinuni
   AKS_NAME: deakinstellak8s
+  CI_WORKFLOW_NAME: "CI - Stage 1 (testing push → test → ACR push)"  # <- your CI 'name:' exactly
 
 concurrency:
-  group: staging-${{ github.ref }}
+  group: staging-pr-${{ github.event.number }}
   cancel-in-progress: true
 
 jobs:
   deploy-staging:
-    # Only proceed if CI concluded successfully and branch is testing/development
+    # PR source must be 'testing' in the same repo, and base must be 'main'
     if: >
-      github.event.workflow_run.conclusion == 'success' &&
-      (github.event.workflow_run.head_branch == 'testing' ||
-       github.event.workflow_run.head_branch == 'development')
-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.ref == 'testing' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
+      pull-requests: read
 
     steps:
-      # Pull manifests from repo
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Azure login via service principal JSON (AZURE_CREDENTIALS)
+      # Gate 2: Ensure the CI (Stage 1) succeeded for this PR head SHA on branch 'testing'
+      - name: Ensure CI success for this PR head
+        id: ensure-ci
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const headSha = context.payload.pull_request.head.sha;
+            const wfName  = process.env.CI_WORKFLOW_NAME;
+
+            const { data: { workflows } } = await github.rest.actions.listRepoWorkflows({
+              owner: context.repo.owner, repo: context.repo.repo
+            });
+            const ci = workflows.find(wf => wf.name === wfName);
+            if (!ci) core.setFailed(`Cannot find CI workflow named: ${wfName}`);
+
+            const { data: { workflow_runs } } = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: ci.id,
+              branch: 'testing',
+              event: 'push',
+              per_page: 50
+            });
+
+            const ok = workflow_runs.find(r => r.head_sha === headSha && r.conclusion === 'success');
+            if (!ok) core.setFailed(`CI not successful for head SHA ${headSha}. Run Stage 1 on 'testing' first.`);
+            else core.info(`CI success: run #${ok.id} for ${headSha}`);
+
       - name: Azure Login
+        if: steps.ensure-ci.outcome == 'success'
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # Get kubeconfig for the hard-coded AKS cluster
       - name: Get AKS credentials
+        if: steps.ensure-ci.outcome == 'success'
         run: az aks get-credentials -g "$AKS_RG" -n "$AKS_NAME" --overwrite-existing
 
-      # Try to reuse the image tag produced by CI
-      - name: Download deploy manifest from CI
-        uses: actions/download-artifact@v4
-        with:
-          name: deploy-manifest
-          path: out
-        continue-on-error: true
-
-      # Resolve image tag and registry (fallbacks if artifact is missing)
-      - name: Resolve image tag & registry
+      # Use the same tag scheme as CI: testing-<short PR head SHA>
+      - name: Compute image TAG from PR head
+        if: steps.ensure-ci.outcome == 'success'
         id: meta
-        shell: bash
         run: |
-          if [ -f out/deploy-manifest.json ]; then
-            TAG="$(jq -r '.tag' out/deploy-manifest.json)"
-            REG="$(jq -r '.registry' out/deploy-manifest.json)"
-          else
-            TAG="testing-${GITHUB_SHA::7}"
-            REG="${{ env.REGISTRY }}"
-          fi
-          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
-          echo "REG=$REG" >> "$GITHUB_OUTPUT"
-          echo "Using: $REG (tag=$TAG)"
+          SHA="${{ github.event.pull_request.head.sha }}"
+          echo "TAG=testing-${SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "REG=${{ env.REGISTRY }}" >> "$GITHUB_OUTPUT"
 
-      # Create an ephemeral namespace (unique per run)
-      - name: Create ephemeral namespace
+      - name: Create / ensure PR staging namespace
+        if: steps.ensure-ci.outcome == 'success'
         id: ns
         run: |
-          NS="stg-${GITHUB_RUN_ID}"
-          kubectl create namespace "$NS"
+          NS="stg-pr-${{ github.event.number }}"
+          kubectl get ns "$NS" >/dev/null 2>&1 || kubectl create namespace "$NS"
           echo "name=$NS" >> "$GITHUB_OUTPUT"
-          echo "Staging namespace: $NS"
 
-      # Apply ConfigMap and Secrets first (adjust path to your repo layout)
       - name: Apply config & secrets
+        if: steps.ensure-ci.outcome == 'success'
         run: |
           NS="${{ steps.ns.outputs.name }}"
           kubectl apply -n "$NS" -f week10/k8s/configmaps.yaml
           kubectl apply -n "$NS" -f week10/k8s/secrets.yaml || true
 
-      # Bring up the 3 Postgres DBs
       - name: Apply databases
+        if: steps.ensure-ci.outcome == 'success'
         run: |
           NS="${{ steps.ns.outputs.name }}"
           kubectl apply -n "$NS" -f week10/k8s/product-db.yaml
           kubectl apply -n "$NS" -f week10/k8s/order-db.yaml
           kubectl apply -n "$NS" -f week10/k8s/customer-db.yaml
 
-      # Best-effort wait for DB deployments to be available
-      - name: Wait for DB pods
-        run: |
-          NS="${{ steps.ns.outputs.name }}"
-          kubectl wait --for=condition=available deploy/product-db    -n "$NS" --timeout=120s || true
-          kubectl wait --for=condition=available deploy/order-db      -n "$NS" --timeout=120s || true
-          kubectl wait --for=condition=available deploy/customer-db   -n "$NS" --timeout=120s || true
-
-      # Apply application deployments/services
       - name: Apply services
+        if: steps.ensure-ci.outcome == 'success'
         run: |
           NS="${{ steps.ns.outputs.name }}"
           kubectl apply -n "$NS" -f week10/k8s/product-service.yaml
@@ -110,30 +113,28 @@ jobs:
           kubectl apply -n "$NS" -f week10/k8s/customer-service.yaml
           kubectl apply -n "$NS" -f week10/k8s/frontend.yaml || true
 
-      # Overwrite container images with the new tag from CI
-      # Make sure deployment names and container names match your YAMLs
       - name: Set container images to new tag
+        if: steps.ensure-ci.outcome == 'success'
         run: |
           NS="${{ steps.ns.outputs.name }}"
           REG="${{ steps.meta.outputs.REG }}"
           TAG="${{ steps.meta.outputs.TAG }}"
-
           kubectl set image deploy/product-service-w10e1   product-service-container="$REG/product-service:$TAG"   -n "$NS"
           kubectl set image deploy/order-service-w10e1     order-service-container="$REG/order-service:$TAG"       -n "$NS"
           kubectl set image deploy/customer-service-w10e1  customer-service-container="$REG/customer-service:$TAG" -n "$NS"
-          kubectl set image deploy/frontend-w10e1          frontend-container="$REG/frontend:$TAG"                 -n "$NS" || true
+          kubectl set image deploy/frontend-w10e1          frontend-container="$REG/frontend:$TAG" -n "$NS" || true
 
-      # Wait for all rollouts to complete
       - name: Wait for rollouts
+        if: steps.ensure-ci.outcome == 'success'
         run: |
           NS="${{ steps.ns.outputs.name }}"
-          kubectl rollout status deploy/product-service-w10e1   -n "$NS" --timeout=240s
-          kubectl rollout status deploy/order-service-w10e1     -n "$NS" --timeout=240s
-          kubectl rollout status deploy/customer-service-w10e1  -n "$NS" --timeout=240s
-          kubectl rollout status deploy/frontend-w10e1          -n "$NS" --timeout=240s || true
+          kubectl rollout status deploy/product-service-w10e1   -n "$NS" --timeout=300s
+          kubectl rollout status deploy/order-service-w10e1     -n "$NS" --timeout=300s
+          kubectl rollout status deploy/customer-service-w10e1  -n "$NS" --timeout=300s
+          kubectl rollout status deploy/frontend-w10e1          -n "$NS" --timeout=300s || true
 
-      # Quick smoke tests inside the cluster
       - name: Smoke test (internal curl)
+        if: steps.ensure-ci.outcome == 'success'
         run: |
           NS="${{ steps.ns.outputs.name }}"
           kubectl run curlpod -n "$NS" --image=curlimages/curl:8.8.0 --restart=Never --rm -it -- \
@@ -143,30 +144,3 @@ jobs:
               curl -fsS http://order-service-w10e1:8001/health  || true
               curl -fsS http://customer-service-w10e1:8002/health || true
             '
-
-      # If something fails, collect diagnostics to artifacts
-      - name: Collect diagnostics (on failure)
-        if: failure()
-        run: |
-          NS="${{ steps.ns.outputs.name }}"
-          mkdir -p artifacts/k8s
-          kubectl get all -n "$NS" > artifacts/k8s/get-all.txt || true
-          kubectl get events -n "$NS" --sort-by=.lastTimestamp > artifacts/k8s/events.txt || true
-          for d in product-service-w10e1 order-service-w10e1 customer-service-w10e1; do
-            kubectl describe deploy/$d -n "$NS" > "artifacts/k8s/${d}-describe.txt" || true
-            kubectl logs deploy/$d -n "$NS" --tail=200 > "artifacts/k8s/${d}-logs.txt" || true
-          done
-
-      - name: Upload diagnostics (on failure)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: staging-diagnostics-${{ steps.ns.outputs.name }}
-          path: artifacts/k8s/
-          retention-days: 7
-
-      # Always clean up the ephemeral namespace
-      - name: Destroy staging environment
-        if: always()
-        run: |
-          kubectl delete namespace "${{ steps.ns.outputs.name }}" --wait=false
