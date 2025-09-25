@@ -4,7 +4,6 @@ name: CD - Staging (Create → Deploy → Test → Destroy)
 on:
   pull_request:
     branches: [ "main" ]
-    types: [opened, synchronize]
 
 env:
   # ACR login server. You can hardcode it too, but keeping it in a secret is cleaner.
