@@ -1,4 +1,4 @@
-name: CI - Stage 1 (testing push → test → ACR push)
+name: CI (testing push → test → ACR push)
 
 on:
   push:

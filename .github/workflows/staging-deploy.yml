@@ -1,0 +1,174 @@
+# .github/workflows/staging-deploy.yml
+name: CD - Staging (Create → Deploy → Test → Destroy)
+
+on:
+  # Auto-run after your CI workflow completes successfully
+  workflow_run:
+    workflows: ["CI - Stage 1 (testing push → test → ACR push)", "CI - Build & Test"]
+    types: [completed]
+
+env:
+  # ACR login server. You can hardcode it too, but keeping it in a secret is cleaner.
+  REGISTRY: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
+
+  # Hard-coded AKS resource group and cluster name (these are *not* secrets)
+  AKS_RG: my-aks-resource-group
+  AKS_NAME: my-aks-cluster
+
+concurrency:
+  group: staging-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-staging:
+    # Only proceed if CI concluded successfully and branch is testing/development
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.head_branch == 'testing' ||
+       github.event.workflow_run.head_branch == 'development')
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      # Pull manifests from repo
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Azure login via service principal JSON (AZURE_CREDENTIALS)
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Get kubeconfig for the hard-coded AKS cluster
+      - name: Get AKS credentials
+        run: az aks get-credentials -g "$AKS_RG" -n "$AKS_NAME" --overwrite-existing
+
+      # Try to reuse the image tag produced by CI
+      - name: Download deploy manifest from CI
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-manifest
+          path: out
+        continue-on-error: true
+
+      # Resolve image tag and registry (fallbacks if artifact is missing)
+      - name: Resolve image tag & registry
+        id: meta
+        shell: bash
+        run: |
+          if [ -f out/deploy-manifest.json ]; then
+            TAG="$(jq -r '.tag' out/deploy-manifest.json)"
+            REG="$(jq -r '.registry' out/deploy-manifest.json)"
+          else
+            TAG="testing-${GITHUB_SHA::7}"
+            REG="${{ env.REGISTRY }}"
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
+          echo "REG=$REG" >> "$GITHUB_OUTPUT"
+          echo "Using: $REG (tag=$TAG)"
+
+      # Create an ephemeral namespace (unique per run)
+      - name: Create ephemeral namespace
+        id: ns
+        run: |
+          NS="stg-${GITHUB_RUN_ID}"
+          kubectl create namespace "$NS"
+          echo "name=$NS" >> "$GITHUB_OUTPUT"
+          echo "Staging namespace: $NS"
+
+      # Apply ConfigMap and Secrets first (adjust path to your repo layout)
+      - name: Apply config & secrets
+        run: |
+          NS="${{ steps.ns.outputs.name }}"
+          kubectl apply -n "$NS" -f week10/k8s/configmaps.yaml
+          kubectl apply -n "$NS" -f week10/k8s/secrets.yaml || true
+
+      # Bring up the 3 Postgres DBs
+      - name: Apply databases
+        run: |
+          NS="${{ steps.ns.outputs.name }}"
+          kubectl apply -n "$NS" -f week10/k8s/product-db.yaml
+          kubectl apply -n "$NS" -f week10/k8s/order-db.yaml
+          kubectl apply -n "$NS" -f week10/k8s/customer-db.yaml
+
+      # Best-effort wait for DB deployments to be available
+      - name: Wait for DB pods
+        run: |
+          NS="${{ steps.ns.outputs.name }}"
+          kubectl wait --for=condition=available deploy/product-db    -n "$NS" --timeout=120s || true
+          kubectl wait --for=condition=available deploy/order-db      -n "$NS" --timeout=120s || true
+          kubectl wait --for=condition=available deploy/customer-db   -n "$NS" --timeout=120s || true
+
+      # Apply application deployments/services
+      - name: Apply services
+        run: |
+          NS="${{ steps.ns.outputs.name }}"
+          kubectl apply -n "$NS" -f week10/k8s/product-service.yaml
+          kubectl apply -n "$NS" -f week10/k8s/order-service.yaml
+          kubectl apply -n "$NS" -f week10/k8s/customer-service.yaml
+          kubectl apply -n "$NS" -f week10/k8s/frontend.yaml || true
+
+      # Overwrite container images with the new tag from CI
+      # Make sure deployment names and container names match your YAMLs
+      - name: Set container images to new tag
+        run: |
+          NS="${{ steps.ns.outputs.name }}"
+          REG="${{ steps.meta.outputs.REG }}"
+          TAG="${{ steps.meta.outputs.TAG }}"
+
+          kubectl set image deploy/product-service-w10e1   product-service-container="$REG/product-service:$TAG"   -n "$NS"
+          kubectl set image deploy/order-service-w10e1     order-service-container="$REG/order-service:$TAG"       -n "$NS"
+          kubectl set image deploy/customer-service-w10e1  customer-service-container="$REG/customer-service:$TAG" -n "$NS"
+          kubectl set image deploy/frontend-w10e1          frontend-container="$REG/frontend:$TAG"                 -n "$NS" || true
+
+      # Wait for all rollouts to complete
+      - name: Wait for rollouts
+        run: |
+          NS="${{ steps.ns.outputs.name }}"
+          kubectl rollout status deploy/product-service-w10e1   -n "$NS" --timeout=240s
+          kubectl rollout status deploy/order-service-w10e1     -n "$NS" --timeout=240s
+          kubectl rollout status deploy/customer-service-w10e1  -n "$NS" --timeout=240s
+          kubectl rollout status deploy/frontend-w10e1          -n "$NS" --timeout=240s || true
+
+      # Quick smoke tests inside the cluster
+      - name: Smoke test (internal curl)
+        run: |
+          NS="${{ steps.ns.outputs.name }}"
+          kubectl run curlpod -n "$NS" --image=curlimages/curl:8.8.0 --restart=Never --rm -it -- \
+            sh -lc '
+              set -eux
+              curl -fsS http://product-service-w10e1:8000/health
+              curl -fsS http://order-service-w10e1:8001/health  || true
+              curl -fsS http://customer-service-w10e1:8002/health || true
+            '
+
+      # If something fails, collect diagnostics to artifacts
+      - name: Collect diagnostics (on failure)
+        if: failure()
+        run: |
+          NS="${{ steps.ns.outputs.name }}"
+          mkdir -p artifacts/k8s
+          kubectl get all -n "$NS" > artifacts/k8s/get-all.txt || true
+          kubectl get events -n "$NS" --sort-by=.lastTimestamp > artifacts/k8s/events.txt || true
+          for d in product-service-w10e1 order-service-w10e1 customer-service-w10e1; do
+            kubectl describe deploy/$d -n "$NS" > "artifacts/k8s/${d}-describe.txt" || true
+            kubectl logs deploy/$d -n "$NS" --tail=200 > "artifacts/k8s/${d}-logs.txt" || true
+          done
+
+      - name: Upload diagnostics (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-diagnostics-${{ steps.ns.outputs.name }}
+          path: artifacts/k8s/
+          retention-days: 7
+
+      # Always clean up the ephemeral namespace
+      - name: Destroy staging environment
+        if: always()
+        run: |
+          kubectl delete namespace "${{ steps.ns.outputs.name }}" --wait=false
