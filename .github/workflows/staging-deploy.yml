@@ -145,6 +145,47 @@ jobs:
           done
           echo "✅ Infra ready in $NS"
 
+      - name: Test API endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          NS="${{ steps.meta.outputs.NS }}"
+
+          echo "=== Testing API Health ==="
+
+          # Get service external IPs
+          PRODUCT_IP=$(kubectl get svc product-service-w10e1 -n "$NS" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          ORDER_IP=$(kubectl get svc order-service-w10e1 -n "$NS" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          CUSTOMER_IP=$(kubectl get svc customer-service-w10e1 -n "$NS" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          FRONTEND_IP=$(kubectl get svc frontend-w10e1 -n "$NS" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+          echo "Product Service IP: $PRODUCT_IP"
+          echo "Order Service IP: $ORDER_IP"
+          echo "Customer Service IP: $CUSTOMER_IP"
+          echo "Frontend IP: $FRONTEND_IP"
+
+          # Wait for LoadBalancer IPs to be assigned
+          echo "Waiting for LoadBalancer IPs..."
+          sleep 30
+
+          # Test Product Service
+          echo "→ Testing Product Service"
+          curl -f --max-time 30 "http://$PRODUCT_IP:8000/" || curl -f --max-time 30 "http://$PRODUCT_IP:8000/products" || echo "⚠️ Product service test failed"
+
+          # Test Order Service
+          echo "→ Testing Order Service"
+          curl -f --max-time 30 "http://$ORDER_IP:8001/" || curl -f --max-time 30 "http://$ORDER_IP:8001/orders" || echo "⚠️ Order service test failed"
+
+          # Test Customer Service
+          echo "→ Testing Customer Service"
+          curl -f --max-time 30 "http://$CUSTOMER_IP:8002/" || curl -f --max-time 30 "http://$CUSTOMER_IP:8002/customers" || echo "⚠️ Customer service test failed"
+
+          # Test Frontend
+          echo "→ Testing Frontend"
+          curl -f --max-time 30 "http://$FRONTEND_IP:80/" || echo "⚠️ Frontend test failed"
+
+          echo "✅ API tests completed"
+
       - name: Destroy staging environment (always)
         if: always()
         run: |

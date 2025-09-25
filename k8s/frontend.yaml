@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: ${ACR_LOGIN_SERVER}/frontend:${IMAGE_TAG}
+          image: deakinstellaregistry.azurecr.io/frontend:v1
           ports:
             - containerPort: 80
           volumeMounts:
