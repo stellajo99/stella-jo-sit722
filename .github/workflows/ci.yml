@@ -1,17 +1,15 @@
-name: CI - Build & Test
+name: CI - Stage 1 (testing push → test → ACR push)
 
 on:
-  pull_request:
-    branches: [ "main" ]
   push:
-    branches: [ "development", "main" ]
-  workflow_dispatch:
+    branches: [ "testing" ]   
+  workflow_dispatch:      
 
 env:
   REGISTRY: ${{ secrets.AZURE_CONTAINER_REGISTRY }} 
 
 jobs:
-  # === Backend tests (Python) across three services ===
+
   test-backend:
     name: Backend tests (${{ matrix.service }})
     runs-on: ubuntu-latest
@@ -39,7 +37,7 @@ jobs:
           python -m pip install -U pip
           if [ -f "$SVC/requirements-dev.txt" ]; then pip install -r "$SVC/requirements-dev.txt"; fi
           if [ -f "$SVC/requirements.txt" ]; then pip install -r "$SVC/requirements.txt"; fi
-          # ensure pytest exists
+          # ensure pytest is present
           python - <<'PY'
           import importlib.util, sys
           sys.exit(0 if importlib.util.find_spec("pytest") else 1)
@@ -51,17 +49,15 @@ jobs:
           set -eux
           pytest -q backend/${{ matrix.service }}/tests
 
-  # === Build & Push ===
+
   build-and-push:
-    name: Build & Push Images
+    name: Build & Push to ACR
     runs-on: ubuntu-latest
-    needs: [ test-backend ]
+    needs: [ test-backend ]         
     permissions:
       contents: read
       id-token: write
-
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-
+    if: github.ref == 'refs/heads/testing' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -79,64 +75,42 @@ jobs:
       - name: Set image tag
         id: meta
         run: |
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            echo "TAG=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          else
-            echo "TAG=dev-sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Show build context
-        run: |
-          echo "::group::Build Context"
-          echo "Branch: ${{ github.ref_name }}"
-          echo "Event: ${{ github.event_name }}"
-          echo "Image Tag: ${{ steps.meta.outputs.TAG }}"
-          echo "Registry: ${{ env.REGISTRY }}"
-          ls -la
-          echo "---- backend/"
-          ls -la backend/ || true
-          echo "---- frontend/"
-          ls -la frontend/ || true
-          echo "::endgroup::"
+          echo "TAG=testing-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Build & Push product-service
         run: |
           docker build -t $REGISTRY/product-service:${{ steps.meta.outputs.TAG }} \
             -f backend/product_service/Dockerfile backend/product_service
           docker push $REGISTRY/product-service:${{ steps.meta.outputs.TAG }}
-          echo "✅ product-service pushed"
 
       - name: Build & Push order-service
         run: |
           docker build -t $REGISTRY/order-service:${{ steps.meta.outputs.TAG }} \
             -f backend/order_service/Dockerfile backend/order_service
           docker push $REGISTRY/order-service:${{ steps.meta.outputs.TAG }}
-          echo "✅ order-service pushed"
 
       - name: Build & Push customer-service
         run: |
           docker build -t $REGISTRY/customer-service:${{ steps.meta.outputs.TAG }} \
             -f backend/customer_service/Dockerfile backend/customer_service
           docker push $REGISTRY/customer-service:${{ steps.meta.outputs.TAG }}
-          echo "✅ customer-service pushed"
 
       - name: Build & Push frontend
         run: |
           docker build -t $REGISTRY/frontend:${{ steps.meta.outputs.TAG }} \
             -f frontend/Dockerfile frontend
           docker push $REGISTRY/frontend:${{ steps.meta.outputs.TAG }}
-          echo "✅ frontend pushed"
 
       - name: Verify image push
         run: |
           ACR_NAME="$(echo "${{ secrets.AZURE_CONTAINER_REGISTRY }}" | cut -d'.' -f1)"
-          echo "Images in product-service:"
+          echo "product-service:"
           az acr repository show-tags --name "$ACR_NAME" --repository product-service --orderby time_desc --top 5 || true
-          echo "Images in order-service:"
+          echo "order-service:"
           az acr repository show-tags --name "$ACR_NAME" --repository order-service --orderby time_desc --top 5 || true
-          echo "Images in customer-service:"
+          echo "customer-service:"
           az acr repository show-tags --name "$ACR_NAME" --repository customer-service --orderby time_desc --top 5 || true
-          echo "Images in frontend:"
+          echo "frontend:"
           az acr repository show-tags --name "$ACR_NAME" --repository frontend --orderby time_desc --top 5 || true
 
       - name: Create deploy manifest
@@ -160,16 +134,3 @@ jobs:
           name: deploy-manifest
           path: out/deploy-manifest.json
           retention-days: 30
-
-  development-feedback:
-    name: Development Branch Summary
-    runs-on: ubuntu-latest
-    needs: test-backend
-    if: github.ref == 'refs/heads/development'
-    steps:
-      - name: Development summary
-        run: |
-          echo "🔍 Development branch CI completed successfully!"
-          echo "✅ Backend tests passed"
-          echo "ℹ️  Images were NOT pushed to registry (development branch)"
-          echo "💡 Create a PR to main to trigger build & push"
