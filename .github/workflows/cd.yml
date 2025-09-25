@@ -168,7 +168,7 @@ jobs:
           TAG="${{ steps.manifest.outputs.TAG }}"
           
           # Check if all required images exist
-          for service in product-service order-service frontend; do
+          for service in product-service order-service customer-service frontend; do
             echo "Checking $service:$TAG..."
             if az acr repository show-tags --name "$ACR_NAME" --repository "$service" | grep -q "\"$TAG\""; then
               echo "✅ $service:$TAG exists"
@@ -188,16 +188,21 @@ jobs:
           echo "🗄️  Ensuring databases are deployed..."
           
           # Check if databases are already running
-          if ! kubectl get deployment product-db-deployment-w08e1 -n "$NS" > /dev/null 2>&1; then
+          if ! kubectl get deployment product-db-deployment-w10e1 -n "$NS" > /dev/null 2>&1; then
             echo "Deploying product database..."
             kubectl apply -n "$NS" -f k8s/product-db.yaml
           fi
           
-          if ! kubectl get deployment order-db-deployment-w08e1 -n "$NS" > /dev/null 2>&1; then
+          if ! kubectl get deployment order-db-deployment-w10e1 -n "$NS" > /dev/null 2>&1; then
             echo "Deploying order database..."
             kubectl apply -n "$NS" -f k8s/order-db.yaml
           fi
-          
+
+          if ! kubectl get deployment customer-db-deployment-w10e1 -n "$NS" > /dev/null 2>&1; then
+            echo "Deploying customer database..."
+            kubectl apply -n "$NS" -f k8s/customer-db.yaml
+          fi
+
           echo "✅ Database deployments ensured"
 
       # --- Application Deployment ---
@@ -214,6 +219,7 @@ jobs:
           # Apply application manifests
           kubectl apply -n "$NS" -f k8s/product-service.yaml
           kubectl apply -n "$NS" -f k8s/order-service.yaml
+          kubectl apply -n "$NS" -f k8s/customer-service.yaml
           kubectl apply -n "$NS" -f k8s/frontend.yaml
           
           echo "✅ Manifests applied successfully"
@@ -230,6 +236,7 @@ jobs:
           window.__CONFIG__ = {
             PRODUCT_API_URL: 'http://loading:8000',
             ORDER_API_URL: 'http://loading:8001',
+            CUSTOMER_API_URL: 'http://loading:8002',
             STATUS: 'loading'
           };
           EOF
@@ -249,8 +256,9 @@ jobs:
           echo "🔄 Updating deployment images to $TAG..."
           
           # Update images with explicit container names (no auto-detection)
-          kubectl -n "$NS" set image deploy/product-service-w08e1 product-service-container="$REG/product-service:$TAG"
-          kubectl -n "$NS" set image deploy/order-service-w08e1 order-service-container="$REG/order-service:$TAG"
+          kubectl -n "$NS" set image deploy/product-service-w10e1 product-service-container="$REG/product-service:$TAG"
+          kubectl -n "$NS" set image deploy/order-service-w10e1 order-service-container="$REG/order-service:$TAG"
+          kubectl -n "$NS" set image deploy/customer-service-w10e1 customer-service-container="$REG/customer-service:$TAG"
           kubectl -n "$NS" set image deploy/frontend frontend="$REG/frontend:$TAG"
           
           echo "✅ Image updates applied"
@@ -262,14 +270,14 @@ jobs:
         run: |
           echo "⏳ Waiting for rollouts to complete..."
           
-          for DEP in product-service-w08e1 order-service-w08e1 frontend; do
+          for DEP in product-service-w10e1 order-service-w10e1 customer-service-w10e1 frontend; do
             echo "Waiting for $DEP rollout..."
             if ! kubectl -n "$NS" rollout status "deploy/$DEP" --timeout=600s; then
               echo "❌ Rollout failed for $DEP"
               echo "Deployment description:"
               kubectl -n "$NS" describe deploy "$DEP"
               echo "Pod status:"
-              kubectl -n "$NS" get pods -l app=$(echo $DEP | sed 's/-w08e1$//') -o wide
+              kubectl -n "$NS" get pods -l app=$(echo $DEP | sed 's/-w10e1$//') -o wide
               echo "Recent events:"
               kubectl -n "$NS" get events --sort-by=.metadata.creationTimestamp --field-selector involvedObject.name=$DEP
               exit 1
@@ -287,7 +295,7 @@ jobs:
           echo "🌐 Waiting for LoadBalancer external IPs..."
           
           # Wait for external IPs with better error handling
-          for service in "product-service-w08e1:PRODUCT_IP" "order-service-w08e1:ORDER_IP" "frontend-w08e1:FRONT_IP"; do
+          for service in "product-service-w10e1:PRODUCT_IP" "order-service-w10e1:ORDER_IP" "customer-service-w10e1:CUSTOMER_IP" "frontend-w10e1:FRONT_IP"; do
             svc_name=$(echo $service | cut -d: -f1)
             var_name=$(echo $service | cut -d: -f2)
             
@@ -319,6 +327,7 @@ jobs:
           window.__CONFIG__ = {
             PRODUCT_API_URL: 'http://${{ steps.services.outputs.PRODUCT_IP }}:8000',
             ORDER_API_URL: 'http://${{ steps.services.outputs.ORDER_IP }}:8001',
+            CUSTOMER_API_URL: 'http://${{ steps.services.outputs.CUSTOMER_IP }}:8002',
             VERSION: '${{ steps.manifest.outputs.TAG }}',
             DEPLOYED_AT: '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
             STATUS: 'ready'
@@ -346,8 +355,9 @@ jobs:
           echo "   Commit: ${{ steps.manifest.outputs.COMMIT_SHA }}"
           echo ""
           echo "🌐 Application Endpoints:"
-          echo "   Frontend:  http://${{ steps.services.outputs.FRONT_IP }}"
-          echo "   Products:  http://${{ steps.services.outputs.PRODUCT_IP }}:8000"
-          echo "   Orders:    http://${{ steps.services.outputs.ORDER_IP }}:8001"
+          echo "   Frontend:   http://${{ steps.services.outputs.FRONT_IP }}"
+          echo "   Products:   http://${{ steps.services.outputs.PRODUCT_IP }}:8000"
+          echo "   Orders:     http://${{ steps.services.outputs.ORDER_IP }}:8001"
+          echo "   Customers:  http://${{ steps.services.outputs.CUSTOMER_IP }}:8002"
           echo ""
           echo "✅ All services are ready!"
