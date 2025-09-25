@@ -3,7 +3,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: customer-db-w10e1
+  name: customer-db-deployment-w10e1
   labels:
     app: customer-db
 spec:

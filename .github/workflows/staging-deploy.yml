@@ -107,9 +107,9 @@ jobs:
         if: steps.ensure-ci.outcome == 'success'
         run: |
           NS="${{ steps.ns.outputs.name }}"
-          kubectl wait --for=condition=available deploy/product-db   -n "$NS" --timeout=180s || true
-          kubectl wait --for=condition=available deploy/order-db     -n "$NS" --timeout=180s || true
-          kubectl wait --for=condition=available deploy/customer-db  -n "$NS" --timeout=180s || true
+          kubectl rollout status deploy/product-db-deployment-w10e1 -n "$NS" --timeout=300s || true
+          kubectl rollout status deploy/order-db-deployment-w10e1   -n "$NS" --timeout=300s || true
+          kubectl rollout status deploy/customer-db-deployment-w10e1          -n "$NS" --timeout=300s || true
 
       - name: Apply services
         if: steps.ensure-ci.outcome == 'success'
@@ -126,11 +126,11 @@ jobs:
           NS="${{ steps.ns.outputs.name }}"
           REG="${{ steps.meta.outputs.REG }}"
           TAG="${{ steps.meta.outputs.TAG }}"
-          kubectl set image deploy/product-service-w10e1   product-service-container="$REG/product-service:$TAG"   -n "$NS"
-          kubectl set image deploy/order-service-w10e1     order-service-container="$REG/order-service:$TAG"       -n "$NS"
-          kubectl set image deploy/customer-service-w10e1  customer-service-container="$REG/customer-service:$TAG" -n "$NS"
-          kubectl set image deploy/frontend-w10e1          frontend-container="$REG/frontend:$TAG" -n "$NS" || true
-
+          kubectl set image deploy/product-service-w10e1  product-service-container="$REG/product-service:$TAG"   -n "$NS"
+          kubectl set image deploy/order-service-w10e1    order-service-container="$REG/order-service:$TAG"       -n "$NS"
+          kubectl set image deploy/customer-service-w10e1 customer-service-container="$REG/customer-service:$TAG" -n "$NS"
+          kubectl set image deploy/frontend               frontend="$REG/frontend:$TAG"                           -n "$NS" || true
+      
       - name: Wait for rollouts
         if: steps.ensure-ci.outcome == 'success'
         run: |
@@ -138,19 +138,44 @@ jobs:
           kubectl rollout status deploy/product-service-w10e1   -n "$NS" --timeout=300s
           kubectl rollout status deploy/order-service-w10e1     -n "$NS" --timeout=300s
           kubectl rollout status deploy/customer-service-w10e1  -n "$NS" --timeout=300s
-          kubectl rollout status deploy/frontend-w10e1          -n "$NS" --timeout=300s || true
+          kubectl rollout status deploy/frontend                -n "$NS" --timeout=300s || true
 
-      - name: Smoke test (internal curl)
+      - name: Smoke test (internal curl with retries)
         if: steps.ensure-ci.outcome == 'success'
         run: |
+          set -eux
           NS="${{ steps.ns.outputs.name }}"
-          kubectl run curlpod -n "$NS" --image=curlimages/curl:8.8.0 --restart=Never --rm -it -- \
-            sh -lc '
+
+          svc_port () { kubectl get svc "$1" -n "$NS" -o jsonpath='{.spec.ports[0].port}'; }
+
+          P_SVC=product-service-w10e1
+          O_SVC=order-service-w10e1
+          C_SVC=customer-service-w10e1
+          F_SVC=frontend-w10e1
+
+          P_PORT=$(svc_port $P_SVC)
+          O_PORT=$(svc_port $O_SVC)
+          C_PORT=$(svc_port $C_SVC)
+          F_PORT=$(svc_port $F_SVC)
+
+          kubectl run curlpod -n "$NS" --image=curlimages/curl:8.8.0 --restart=Never -- \
+            sh -lc "
               set -eux
-              curl -fsS http://product-service-w10e1:8000/health
-              curl -fsS http://order-service-w10e1:8001/health  || true
-              curl -fsS http://customer-service-w10e1:8002/health || true
-            '
+              for i in \$(seq 1 20); do
+                curl -fsS http://$P_SVC:${P_PORT}/health && break || sleep 3
+              done
+              for i in \$(seq 1 10); do
+                curl -fsS http://$O_SVC:${O_PORT}/health && break || sleep 3
+              done || true
+              for i in \$(seq 1 10); do
+                curl -fsS http://$C_SVC:${C_PORT}/health && break || sleep 3
+              done || true
+              # frontend index
+              for i in \$(seq 1 10); do
+                curl -fsS -o /dev/null -w '%{http_code}\n' http://$F_SVC:${F_PORT}/ | grep -qE '^(200|301|302)$' && break || sleep 3
+              done
+            "
+          kubectl delete pod -n "$NS" -l run=curlpod --ignore-not-found
 
       - name: Destroy staging environment (always)
         if: always()
