@@ -13,6 +13,20 @@ jobs:
   test-backend:
     name: Backend tests (${{ matrix.service }})
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
     strategy:
       fail-fast: false
       matrix:
@@ -45,6 +59,12 @@ jobs:
           if [ $? -ne 0 ]; then pip install pytest; fi
 
       - name: Run pytest
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
         run: |
           set -eux
           pytest -q backend/${{ matrix.service }}/tests
