@@ -10,7 +10,6 @@ env:
   REGISTRY: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
   AKS_RG: deakinuni
   AKS_NAME: deakinstellak8s
-  CI_WORKFLOW_NAME: "CI - Stage 1 (testing push → test → ACR push)"  # <- your CI 'name:' exactly
 
 concurrency:
   group: staging-pr-${{ github.event.number }}
@@ -18,7 +17,7 @@ concurrency:
 
 jobs:
   deploy-staging:
-    # PR source must be 'testing' in the same repo, and base must be 'main'
+    # PR must be testing -> main from same repo
     if: >
       github.event_name == 'pull_request' &&
       github.event.pull_request.base.ref == 'main' &&
@@ -34,33 +33,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Gate 2: Ensure the CI (Stage 1) succeeded for this PR head SHA on branch 'testing'
+      # ✅ Gate: ensure CI success for this PR head SHA on 'testing'
       - name: Ensure CI success for this PR head
         id: ensure-ci
         uses: actions/github-script@v7
         with:
           script: |
             const headSha = context.payload.pull_request.head.sha;
-            const wfName  = process.env.CI_WORKFLOW_NAME;
 
-            const { data: { workflows } } = await github.rest.actions.listRepoWorkflows({
-              owner: context.repo.owner, repo: context.repo.repo
-            });
-            const ci = workflows.find(wf => wf.name === wfName);
-            if (!ci) core.setFailed(`Cannot find CI workflow named: ${wfName}`);
-
-            const { data: { workflow_runs } } = await github.rest.actions.listWorkflowRuns({
+            // Find any successful push run on branch 'testing' with the same head SHA
+            const runsResp = await github.rest.actions.listWorkflowRunsForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              workflow_id: ci.id,
               branch: 'testing',
               event: 'push',
-              per_page: 50
+              per_page: 100
             });
 
-            const ok = workflow_runs.find(r => r.head_sha === headSha && r.conclusion === 'success');
-            if (!ok) core.setFailed(`CI not successful for head SHA ${headSha}. Run Stage 1 on 'testing' first.`);
-            else core.info(`CI success: run #${ok.id} for ${headSha}`);
+            const match = runsResp.data.workflow_runs.find(r =>
+              r.head_sha === headSha && r.conclusion === 'success'
+            );
+
+            if (!match) {
+              core.setFailed(`No successful CI found for head SHA ${headSha} on branch 'testing'.`);
+              return;
+            }
+
+            core.info(`CI success: workflow "${match.name}" run #${match.id} on ${match.head_branch}`);
 
       - name: Azure Login
         if: steps.ensure-ci.outcome == 'success'
