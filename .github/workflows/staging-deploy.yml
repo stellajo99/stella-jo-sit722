@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   deploy-staging:
-    # PR must be testing -> main from same repo
+    # PR must be from 'testing' in the same repo and into 'main'
     if: >
       github.event_name == 'pull_request' &&
       github.event.pull_request.base.ref == 'main' &&
@@ -33,33 +33,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ✅ Gate: ensure CI success for this PR head SHA on 'testing'
-      - name: Ensure CI success for this PR head
+      # Gate: ensure a successful CI (push on 'testing') exists for this PR head SHA
+      - name: Ensure CI success for PR head
         id: ensure-ci
         uses: actions/github-script@v7
         with:
           script: |
             const headSha = context.payload.pull_request.head.sha;
-
-            // Find any successful push run on branch 'testing' with the same head SHA
-            const runsResp = await github.rest.actions.listWorkflowRunsForRepo({
+            const runs = await github.rest.actions.listWorkflowRunsForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               branch: 'testing',
               event: 'push',
               per_page: 100
             });
-
-            const match = runsResp.data.workflow_runs.find(r =>
-              r.head_sha === headSha && r.conclusion === 'success'
-            );
-
-            if (!match) {
-              core.setFailed(`No successful CI found for head SHA ${headSha} on branch 'testing'.`);
-              return;
-            }
-
-            core.info(`CI success: workflow "${match.name}" run #${match.id} on ${match.head_branch}`);
+            const ok = runs.data.workflow_runs.find(r => r.head_sha === headSha && r.conclusion === 'success');
+            if (!ok) core.setFailed(`No successful CI for head SHA ${headSha} on 'testing'.`);
+            else core.info(`CI success: run #${ok.id}`);
 
       - name: Azure Login
         if: steps.ensure-ci.outcome == 'success'
@@ -80,6 +70,14 @@ jobs:
           echo "TAG=testing-${SHA::7}" >> "$GITHUB_OUTPUT"
           echo "REG=${{ env.REGISTRY }}" >> "$GITHUB_OUTPUT"
 
+      - name: Show manifest tree (debug)
+        if: steps.ensure-ci.outcome == 'success'
+        run: |
+          echo "Repo tree around k8s/:"
+          ls -la
+          echo "----- k8s/ -----"
+          ls -la k8s || true
+
       - name: Create / ensure PR staging namespace
         if: steps.ensure-ci.outcome == 'success'
         id: ns
@@ -88,31 +86,40 @@ jobs:
           kubectl get ns "$NS" >/dev/null 2>&1 || kubectl create namespace "$NS"
           echo "name=$NS" >> "$GITHUB_OUTPUT"
 
+      # ── Apply manifests from root k8s/ ────────────────────────────────────────
       - name: Apply config & secrets
         if: steps.ensure-ci.outcome == 'success'
         run: |
           NS="${{ steps.ns.outputs.name }}"
-          kubectl apply -n "$NS" -f week10/k8s/configmaps.yaml
-          kubectl apply -n "$NS" -f week10/k8s/secrets.yaml || true
+          kubectl apply -n "$NS" -f k8s/configmaps.yaml
+          kubectl apply -n "$NS" -f k8s/secrets.yaml || true
 
       - name: Apply databases
         if: steps.ensure-ci.outcome == 'success'
         run: |
           NS="${{ steps.ns.outputs.name }}"
-          kubectl apply -n "$NS" -f week10/k8s/product-db.yaml
-          kubectl apply -n "$NS" -f week10/k8s/order-db.yaml
-          kubectl apply -n "$NS" -f week10/k8s/customer-db.yaml
+          kubectl apply -n "$NS" -f k8s/product-db.yaml
+          kubectl apply -n "$NS" -f k8s/order-db.yaml
+          kubectl apply -n "$NS" -f k8s/customer-db.yaml
+
+      - name: Wait for DB deployments
+        if: steps.ensure-ci.outcome == 'success'
+        run: |
+          NS="${{ steps.ns.outputs.name }}"
+          kubectl wait --for=condition=available deploy/product-db   -n "$NS" --timeout=180s || true
+          kubectl wait --for=condition=available deploy/order-db     -n "$NS" --timeout=180s || true
+          kubectl wait --for=condition=available deploy/customer-db  -n "$NS" --timeout=180s || true
 
       - name: Apply services
         if: steps.ensure-ci.outcome == 'success'
         run: |
           NS="${{ steps.ns.outputs.name }}"
-          kubectl apply -n "$NS" -f week10/k8s/product-service.yaml
-          kubectl apply -n "$NS" -f week10/k8s/order-service.yaml
-          kubectl apply -n "$NS" -f week10/k8s/customer-service.yaml
-          kubectl apply -n "$NS" -f week10/k8s/frontend.yaml || true
+          kubectl apply -n "$NS" -f k8s/product-service.yaml
+          kubectl apply -n "$NS" -f k8s/order-service.yaml
+          kubectl apply -n "$NS" -f k8s/customer-service.yaml
+          kubectl apply -n "$NS" -f k8s/frontend.yaml || true
 
-      - name: Set container images to new tag
+      - name: Set images to PR tag
         if: steps.ensure-ci.outcome == 'success'
         run: |
           NS="${{ steps.ns.outputs.name }}"
@@ -143,3 +150,8 @@ jobs:
               curl -fsS http://order-service-w10e1:8001/health  || true
               curl -fsS http://customer-service-w10e1:8002/health || true
             '
+
+      - name: Destroy staging environment (always)
+        if: always()
+        run: |
+          kubectl delete namespace "${{ steps.ns.outputs.name }}" --wait=false
