@@ -5,6 +5,7 @@ on:
   workflow_run:
     workflows: ["CI (testing push → test → ACR push)"]  
     types: [completed]
+    branches: [testing]
   workflow_dispatch:
     inputs:
       image_tag:
@@ -35,12 +36,15 @@ jobs:
       id-token: write
 
     steps:
-      - name: Checkout @ CI head (workflow_run) or current (dispatch)
+      - name: Checkout @ CI head (workflow_run)
+        if: github.event_name == 'workflow_run'
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_run'
-                   && github.event.workflow_run.head_sha
-                   || github.sha }}
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Checkout (default)
+        if: github.event_name != 'workflow_run'
+        uses: actions/checkout@v4
 
       - name: Compute image TAG / Namespace
         id: meta
