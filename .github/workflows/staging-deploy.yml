@@ -129,7 +129,7 @@ jobs:
           kubectl set image deploy/product-service-w10e1  product-service-container="$REG/product-service:$TAG"   -n "$NS"
           kubectl set image deploy/order-service-w10e1    order-service-container="$REG/order-service:$TAG"       -n "$NS"
           kubectl set image deploy/customer-service-w10e1 customer-service-container="$REG/customer-service:$TAG" -n "$NS"
-          kubectl set image deploy/frontend               frontend-container="$REG/frontend:$TAG"                 -n "$NS" || true
+          kubectl set image deploy/frontend               frontend="$REG/frontend:$TAG"                           -n "$NS" || true
       
       - name: Wait for rollouts
         if: steps.ensure-ci.outcome == 'success'
