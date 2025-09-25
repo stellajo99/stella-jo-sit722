@@ -3,7 +3,7 @@ name: CI (testing push → test → ACR push)
 
 on:
   push:
-    branches: [ "testing" ]   
+    branches: [ "testing", "main" ]
   workflow_dispatch:      
 
 env:
@@ -96,7 +96,11 @@ jobs:
       - name: Set image tag
         id: meta
         run: |
-          echo "TAG=testing-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "TAG=main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          else
+            echo "TAG=testing-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build & Push product-service
         run: |

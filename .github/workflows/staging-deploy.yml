@@ -170,7 +170,7 @@ jobs:
 
           # Wait for LoadBalancer IPs to be assigned
           echo "Waiting for LoadBalancer IPs..."
-          sleep 30
+          sleep 50
 
           # Test Product Service
           if curl -sf --max-time 30 "http://$PRODUCT_IP:8000/" >/dev/null 2>&1 || curl -sf --max-time 30 "http://$PRODUCT_IP:8000/products" >/dev/null 2>&1; then
