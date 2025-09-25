@@ -1,9 +1,16 @@
+// frontend/main.js
 document.addEventListener('DOMContentLoaded', () => {
-    // API endpoints for the Product, Order, and Customer services.
-    // These ports are mapped from the Docker containers to the host machine in docker-compose.yml.
-    const PRODUCT_API_BASE_URL = '';
-    const ORDER_API_BASE_URL = '';
-    const CUSTOMER_API_BASE_URL = '';
+     if (!window.__CONFIG__) {
+        window.__CONFIG__ = {
+        PRODUCT_API_URL: "http://localhost:8000",
+        ORDER_API_URL: "http://localhost:8001",
+        CUSTOMER_API_URL: "http://localhost:8002"
+        };
+    }
+
+    const PRODUCT_API_BASE_URL = window.__CONFIG__.PRODUCT_API_URL;
+    const ORDER_API_BASE_URL   = window.__CONFIG__.ORDER_API_URL;
+    const CUSTOMER_API_BASE_URL = window.__CONFIG__.CUSTOMER_API_URL;
 
     // DOM Elements
     const messageBox = document.getElementById('message-box');
