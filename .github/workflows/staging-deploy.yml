@@ -2,18 +2,17 @@
 name: CD - Staging (Create → Deploy → Test → Destroy)
 
 on:
-  # Auto-run after your CI workflow completes successfully
-  workflow_run:
-    workflows: ["CI (testing push → test → ACR push)"]
-    types: [completed]
+  pull_request:
+    branches: [ "main" ]
+    types: [opened, synchronize]
 
 env:
   # ACR login server. You can hardcode it too, but keeping it in a secret is cleaner.
   REGISTRY: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
 
   # Hard-coded AKS resource group and cluster name (these are *not* secrets)
-  AKS_RG: my-aks-resource-group
-  AKS_NAME: my-aks-cluster
+  AKS_RG: deakinuni
+  AKS_NAME: deakinstellak8s
 
 concurrency:
   group: staging-${{ github.ref }}
