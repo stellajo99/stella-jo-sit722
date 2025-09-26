@@ -168,21 +168,9 @@ jobs:
           echo "Customer Service IP: $CUSTOMER_IP"
           echo "Frontend IP: $FRONTEND_IP"
 
-          # Wait for LoadBalancer IPs to be assigned with retry logic
+          # Wait for LoadBalancer IPs to be assigned
           echo "Waiting for LoadBalancer IPs..."
-          for i in {1..12}; do
-            sleep 15
-            PENDING_COUNT=$(kubectl get svc -n "$NS" -o jsonpath='{range .items[*]}{.spec.type}{" "}{.status.loadBalancer.ingress[0].ip}{"\n"}{end}' | grep -c "LoadBalancer <no value>" || echo "0")
-            echo "Attempt $i/12: $PENDING_COUNT LoadBalancers still pending"
-            if [ "$PENDING_COUNT" -eq 0 ]; then
-              echo "✅ All LoadBalancer IPs assigned!"
-              break
-            fi
-            if [ $i -eq 12 ]; then
-              echo "⚠️ Some LoadBalancers still pending after 3 minutes, proceeding with tests..."
-              kubectl get svc -n "$NS" -o wide
-            fi
-          done
+          sleep 90
 
           # Test Product Service
           if curl -sf --max-time 30 "http://$PRODUCT_IP:8000/" >/dev/null 2>&1 || curl -sf --max-time 30 "http://$PRODUCT_IP:8000/products" >/dev/null 2>&1; then
