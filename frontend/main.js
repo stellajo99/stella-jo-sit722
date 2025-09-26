@@ -1,5 +1,4 @@
 // frontend/main.js
-// small change
 document.addEventListener('DOMContentLoaded', () => {
      if (!window.__CONFIG__) {
         window.__CONFIG__ = {
