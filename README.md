@@ -191,4 +191,7 @@ The platform features a comprehensive three-stage CI/CD pipeline:
 # 4. Monitor deployment progress
 ```
 
+## 📑 Note
 
+The base e-commerce microservices application was provided as part of the SIT722 course material.
+My primary contribution and implementation focus was on designing and building the CI/CD pipeline (automation workflows, deployments, and environment orchestration).
